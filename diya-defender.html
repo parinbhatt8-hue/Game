@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>Diya Defender</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0a0720; overflow: hidden;
+    font-family: Georgia, "Times New Roman", serif; touch-action: none; user-select: none; }
+  canvas { display: block; position: fixed; inset: 0; }
+  #ui { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center;
+    justify-content: center; text-align: center; color: #ffd27a; padding: 24px; box-sizing: border-box; }
+  #ui h1 { font-size: clamp(34px, 10vw, 64px); margin: 0 0 8px; text-shadow: 0 0 22px #ff9a1f; }
+  #ui p { margin: 4px 0; color: #cdbfff; font-size: 16px; max-width: 320px; line-height: 1.4; }
+  #go { margin-top: 20px; background: #ffb938; color: #2a1200; border: 0; border-radius: 999px;
+    padding: 14px 34px; font: inherit; font-size: 20px; }
+  #ui.hidden { display: none; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ui">
+  <h1 id="title">Diya Defender</h1>
+  <p id="msg">Drag left and right to move your diya. Catch the sweets. Dodge the water drops and firecrackers. Golden stars give a shield.</p>
+  <p id="best"></p>
+  <button id="go">Play</button>
+</div>
+
+<script>
+/* ---------- STEP 1: canvas + game state ---------- */
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let W, H;
+function resize() { W = canvas.width = innerWidth; H = canvas.height = innerHeight; }
+addEventListener('resize', resize); resize();
+
+let state = 'ready';          // ready | play | over
+let score, level, combo, flame, shield, items, sparks, spawnTimer, frameCount;
+const player = { x: 0, tx: 0, y: 0 };
+
+/* ---------- STEP 7: high score saved on the phone ---------- */
+let best = 0;
+try { best = Number(localStorage.getItem('diyaBest')) || 0; } catch (e) {}
+function saveBest() { try { localStorage.setItem('diyaBest', best); } catch (e) {} }
+
+/* ---------- STEP 2: start / reset ---------- */
+function startGame() {
+  score = 0; level = 1; combo = 0; flame = 100; shield = 0;
+  items = []; sparks = []; spawnTimer = 0; frameCount = 0;
+  player.x = player.tx = W / 2; player.y = H - 70;
+  state = 'play';
+  document.getElementById('ui').classList.add('hidden');
+}
+document.getElementById('go').addEventListener('click', startGame);
+document.getElementById('best').textContent = best ? 'Best: ' + best : '';
+
+/* ---------- STEP 3: controls (drag anywhere) ---------- */
+function moveTo(x) { player.tx = Math.min(W - 24, Math.max(24, x)); }
+canvas.addEventListener('pointerdown', e => moveTo(e.clientX));
+canvas.addEventListener('pointermove', e => moveTo(e.clientX));
+
+/* ---------- STEP 4: falling things ---------- */
+const KINDS = {
+  sweet: { emoji: '🍬', good: true },
+  star:  { emoji: '⭐', good: true },
+  drop:  { emoji: '💧', good: false },
+  cracker: { emoji: '🧨', good: false }
+};
+function spawn() {
+  const r = Math.random();
+  let kind = r < 0.5 ? 'sweet' : r < 0.58 ? 'star' : r < 0.82 ? 'drop' : 'cracker';
+  items.push({
+    kind, x: 24 + Math.random() * (W - 48), y: -30,
+    vy: 2 + level * 0.45 + Math.random() * 1.5,
+    wob: Math.random() * 6, size: 30
+  });
+}
+
+/* sparks when you catch something */
+function burst(x, y, hue) {
+  for (let i = 0; i < 14; i++) {
+    const a = Math.random() * Math.PI * 2, s = Math.random() * 3 + 1;
+    sparks.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s - 1, life: 1, hue });
+  }
+}
+
+/* ---------- STEP 5: update (movement, collisions, rules) ---------- */
+function update() {
+  frameCount++;
+  player.x += (player.tx - player.x) * 0.25;           // smooth follow
+
+  spawnTimer--;
+  if (spawnTimer <= 0) {
+    spawn();
+    spawnTimer = Math.max(12, 48 - level * 4);          // faster each level
+  }
+
+  for (const it of items) {
+    it.y += it.vy;
+    it.x += Math.sin((frameCount + it.wob * 10) / 18) * 0.6;   // gentle sway
+  }
+
+  // collisions with the flame (a point a bit above the diya)
+  const fx = player.x, fy = player.y - 14;
+  for (const it of items) {
+    if (it.dead) continue;
+    if (Math.hypot(it.x - fx, it.y - fy) < it.size * 0.7 + 18) {
+      it.dead = true;
+      const k = KINDS[it.kind];
+      if (it.kind === 'sweet') {
+        combo++;
+        score += 1 + Math.floor(combo / 5);              // combo bonus
+        flame = Math.min(100, flame + 4);
+        burst(it.x, it.y, 45);
+      } else if (it.kind === 'star') {
+        shield = 300;                                    // about 5 seconds
+        burst(it.x, it.y, 55);
+      } else {
+        if (shield > 0) { burst(it.x, it.y, 200); }      // shield blocks it
+        else { flame -= it.kind === 'cracker' ? 30 : 20; combo = 0; burst(it.x, it.y, 0); }
+      }
+    }
+  }
+  items = items.filter(it => !it.dead && it.y < H + 40);
+
+  if (shield > 0) shield--;
+  flame -= 0.015;                                         // flame slowly weakens
+
+  level = 1 + Math.floor(score / 12);
+
+  for (const s of sparks) { s.x += s.vx; s.y += s.vy; s.vy += 0.1; s.life -= 0.03; }
+  sparks = sparks.filter(s => s.life > 0);
+
+  if (flame <= 0) gameOver();
+}
+
+/* ---------- STEP 6: drawing ---------- */
+function drawDiya(t) {
+  const { x, y } = player;
+  const f = Math.max(flame, 0) / 100;
+  const flick = Math.sin(t / 90) * 1.5;
+
+  // glow grows with flame strength
+  const g = ctx.createRadialGradient(x, y - 14, 2, x, y - 14, 40 + 70 * f);
+  g.addColorStop(0, `rgba(255,170,40,${0.2 + 0.4 * f})`);
+  g.addColorStop(1, 'rgba(255,170,40,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(x - 120, y - 130, 240, 240);
+
+  // shield bubble
+  if (shield > 0) {
+    ctx.strokeStyle = `rgba(120,220,255,${shield < 60 && frameCount % 10 < 5 ? 0.2 : 0.8})`;
+    ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(x, y - 14, 44, 0, Math.PI * 2); ctx.stroke();
+  }
+
+  // clay bowl
+  ctx.fillStyle = '#c4621a';
+  ctx.beginPath(); ctx.ellipse(x, y, 26, 12, 0, 0, Math.PI); ctx.fill();
+  ctx.fillStyle = '#e07a2a';
+  ctx.beginPath(); ctx.ellipse(x, y, 26, 5, 0, 0, Math.PI * 2); ctx.fill();
+
+  // flame
+  ctx.fillStyle = '#ffd25a';
+  ctx.beginPath();
+  ctx.ellipse(x, y - 6 - 10 * f, 6 + 4 * f, 6 + 14 * f + flick, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#fff3c4';
+  ctx.beginPath();
+  ctx.ellipse(x, y - 4 - 6 * f, 2.5, 3 + 8 * f, 0, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function draw(t) {
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = '#0a0720';
+  ctx.fillRect(0, 0, W, H);
+
+  // twinkling stars (background)
+  ctx.fillStyle = '#fff';
+  for (let i = 0; i < 40; i++) {
+    const sx = (i * 137) % W, sy = (i * 71) % (H * 0.7);
+    ctx.globalAlpha = 0.3 + 0.3 * Math.sin(t / 600 + i);
+    ctx.fillRect(sx, sy, 2, 2);
+  }
+  ctx.globalAlpha = 1;
+
+  // items
+  ctx.font = '30px serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  for (const it of items) ctx.fillText(KINDS[it.kind].emoji, it.x, it.y);
+
+  // sparks
+  for (const s of sparks) {
+    ctx.globalAlpha = s.life;
+    ctx.fillStyle = `hsl(${s.hue} 100% 60%)`;
+    ctx.fillRect(s.x, s.y, 3, 3);
+  }
+  ctx.globalAlpha = 1;
+
+  if (state === 'play' || state === 'over') drawDiya(t);
+
+  // HUD
+  if (state === 'play') {
+    ctx.textAlign = 'left'; ctx.font = '20px Georgia'; ctx.fillStyle = '#ffd27a';
+    ctx.fillText('Score ' + score, 16, 34 + 0);
+    ctx.fillText('Level ' + level, 16, 60);
+    if (combo >= 3) { ctx.fillStyle = '#ff9fb3'; ctx.fillText('Combo x' + combo, 16, 86); }
+    // flame bar
+    const bw = Math.min(160, W * 0.4), bx = W - bw - 16;
+    ctx.fillStyle = 'rgba(255,255,255,.12)'; ctx.fillRect(bx, 22, bw, 12);
+    ctx.fillStyle = flame > 35 ? '#ffb938' : '#ff4d4d';
+    ctx.fillRect(bx, 22, bw * Math.max(flame, 0) / 100, 12);
+    ctx.textAlign = 'right'; ctx.font = '14px Georgia'; ctx.fillStyle = '#cdbfff';
+    ctx.fillText('flame', W - 16, 52);
+  }
+}
+
+/* ---------- STEP 7: game over ---------- */
+function gameOver() {
+  state = 'over';
+  const newBest = score > best;
+  if (newBest) { best = score; saveBest(); }
+  document.getElementById('title').textContent = newBest ? 'New best!' : 'Flame out';
+  document.getElementById('msg').textContent = 'You scored ' + score + ' and reached level ' + level + '.';
+  document.getElementById('best').textContent = 'Best: ' + best;
+  document.getElementById('go').textContent = 'Play again';
+  setTimeout(() => document.getElementById('ui').classList.remove('hidden'), 600);
+}
+
+/* ---------- main loop ---------- */
+function loop(t) {
+  if (state === 'play') update();
+  else if (state === 'over') {                 // let sparks finish
+    for (const s of sparks) { s.x += s.vx; s.y += s.vy; s.vy += 0.1; s.life -= 0.03; }
+    sparks = sparks.filter(s => s.life > 0);
+    items.forEach(it => it.y += it.vy);
+  }
+  draw(t);
+  requestAnimationFrame(loop);
+}
+items = []; sparks = []; flame = 100; shield = 0; combo = 0; level = 1; score = 0;
+player.x = player.tx = W / 2; player.y = H - 70; frameCount = 0;
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
